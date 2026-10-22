@@ -133,7 +133,7 @@ if __name__ == "__main__":
         fieldg.fields[i].raw[59] = fieldg.fields[i].raw[59] + (y_offset * dy)
         fieldg.fields[i].raw[61] = fieldg.fields[i].raw[61] + (x_offset * dx)
 
-        datag = fieldg.fields[i].get_data().copy()
+        datag = fieldg.fields[i].get_data()
         if flip:
             print("Flipping input array NS, apparently it was generated wrong")
             datag = datag[-1:0:-1, :]

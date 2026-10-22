@@ -12,7 +12,6 @@ Called by suite as ice_sheets_ancils_to_atmos
 """
 
 import sys
-import os
 from mule import load_umfile
 import numpy as np
 from netCDF4 import Dataset
@@ -307,21 +306,4 @@ if __name__ == "__main__":
 
     # Output the modified dump
     print("Writing UM output")
-    um_output_temp = um_input.replace('pre_ice', 'af_ice')
-    um_dump.to_file(um_output_temp)
-
-    #double check file sizes for safety, there have been so many issues ending up with partially-written dumps
-    size_of_original = os.stat(um_input).st_size
-    size_of_modified = os.stat(um_output_temp).st_size
-    size_relative = np.abs(size_of_original - size_of_modified) / size_of_original
-
-    #They are usually identical, but let's use a threshold of a few percent for tolerance. This is belt and braces already
-    if ( size_relative < 0.01 ):
-      os.rename(um_output_temp, um_output)
-    else:
-      print("Size of modified file ", um_output_temp, " is significantly different to input ",um_input)
-      print(size_of_modified, " vs ", size_of_original)
-      print("Something must have gone wrong, aborting")
-      exit(1)
-      
-
+    um_dump.to_file(um_output)

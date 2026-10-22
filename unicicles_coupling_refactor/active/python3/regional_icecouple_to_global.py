@@ -170,7 +170,9 @@ def splice_icecouple(GrIS_filename, AIS_filename, global_filename_out):
                 # just copy acros the GrIS version
                 outfield = out_file.createVariable(varname, var.dtype,
                                                    var.dimensions)
-                outfield = var
+                outfield[:] = var[:]
+                outfield.setncatts({k: var.getncattr(k)
+                                    for k in var.ncattrs()
 
         # this effectively writes the file out
         out_file.close()

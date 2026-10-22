@@ -5,6 +5,8 @@ central place to store commonly reused parameters and magic numbers
 """
 
 import numpy as np
+from pyproj import CRS,Transformer
+from netCDF4 import Dataset
 
 # This matches the value in Glimmer
 rho_ice_glimmer = 910.
@@ -78,12 +80,30 @@ stashcode_tile_smb = 8578
 # used by pyproj
 epsg_global = 'epsg:4326'
 
-# Ask CPOM BISICLES people for offsets for different domains
-# when they create them
-epsg_GrIS = 'epsg:3413'
-x0_GrIS = -654650.0
-y0_GrIS = -3385950.0
+# define the BISICLES GrIS projection
+epsg_GrIS = CRS.from_proj4("+proj=laea +lat_0=45 +lon_0=-100 +x_0=3848380 +y_0=1082320 +datum=WGS84 +units=m +no_defs") #'epsg:3413'
+x0_GrIS = 0 # 3848380 these value is baked into the projection, so we don't need to use it
+y0_GrIS = 0 #1 082320 these value is baked ino projection so don't need to use it
 
+# Code to extract lat/lon max mins from the BISICLES GrIS projection
+# This can be hard coded later 
+# define WGS84 lat/lon
+wgs84 = CRS.from_epsg(4326)
+mfact=1
+# projected -> lat/lon (going the other way)
+# Open dataset with netCDF4
+bike = Dataset('../../../share/data/etc/ancil_ice_GrIS/example_output.nc')
+# Access the thickness variable
+thk = bike.variables['thickness']
+# Extract x and y coordinate data
+x = bike.variables['x'][:]
+y = bike.variables['y'][:]
+X, Y = np.meshgrid(x, y)
+bike.close()
+transformer_inv = Transformer.from_crs(epsg_GrIS, wgs84, always_xy=True)
+lon, lat = transformer_inv.transform((X) * mfact, (Y))
+
+# define the BISICLES AIS projection - keep the same!
 epsg_AIS = 'epsg:3031'
 x0_AIS = -3072000
 y0_AIS = -3072000
@@ -95,10 +115,14 @@ x0_ASE = -1831000
 y0_ASE = -904000
 
 # Offsets of regional domains within the UM N96 global grid
-xmin_GrIS = 250.
-xmax_GrIS = 360.
-ymin_GrIS = 45.
-ymax_GrIS = 90.
+# Extract from the BISICLES GrIS projection
+xmin_GrIS = np.min(lon) #-140.
+xmax_GrIS = np.max(lon) #360.
+ymin_GrIS = np.min(lat) #45.
+ymax_GrIS = np.max(lat) #90.
+print("GrIS domain in lat/lon: ", xmin_GrIS, xmax_GrIS, ymin_GrIS, ymax_GrIS)
+# -180 180, 25, 90 - the longitude range is massive cut off at uk?
+
 xcyclic_GrIS = False
 
 xmin_AIS = 0.
@@ -126,23 +150,25 @@ bgtn_nflag = -99999.
 bgtn_bathy_threshold = -5000.
 
 # CAP regional, resolution params
-ncols_GrIS_n216 = 122
+# This maps a cut out of the high resolution orography and how that relates to n216 and n96 - we're using the whole
+# thing for now so offsets =0 and nrows and cols are the full global size
+ncols_GrIS_n216 = 432 # 122 # 0 - 36000 / 43200
 ncols_AIS_n216 = 432
 assig_n216 = 1e-4
 h_n216 = 0.3
-xoff_GrIS_n216 = 309
-yoff_GrIS_n216 = 266
+xoff_GrIS_n216 = 0#309
+yoff_GrIS_n216 = 0#266
 xoff_AIS_n216 = 0
 yoff_AIS_n216 = 1
 
-ncols_GrIS_n96 = 54
-nrows_GrIS_n96 = 25
+ncols_GrIS_n96 = 192#54
+nrows_GrIS_n96 = 144#25
 ncols_AIS_n96 = 192
 nrows_AIS_n96 = 25
 assig_n96 = 5e-5
 h_n96 = 0.15
-xoff_GrIS_n96 = 137
-yoff_GrIS_n96 = 118
+xoff_GrIS_n96 = 0#137
+yoff_GrIS_n96 = 0#118
 xoff_AIS_n96 = 0
 yoff_AIS_n96 = 1
 las_k = 0.4

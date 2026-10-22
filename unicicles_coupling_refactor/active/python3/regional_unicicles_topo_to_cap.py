@@ -12,6 +12,7 @@ Called by suite as regional_ice_sheet_topo_to_ancil
 
 import sys
 import os
+import time
 import numpy as np
 from common_arg_to_file_exist import arg_to_file_exist
 from common_params_and_constants import dx_regrid_coarse, dy_regrid_coarse, \
@@ -224,8 +225,10 @@ def regrid_to_GLOBE30(field_CF, region="GrIS"):
                axes=('Y', 'X'))
 
     # Do the cf-python regrid from BISICLES to the regular grid
+    t0 = time.time()
     field_REGRID = field_CF.regrids(g, dst_cyclic=xcyclic, method='linear',
                                     src_axes={'X': 'key%X', 'Y': 'key%Y'})
+    print("coarse cf-python regrid: %.1fs" % (time.time() - t0))
 
     # For the one-stage regrid, return the array now
     # field_REGRID_array = field_REGRID.array
@@ -266,13 +269,17 @@ def regrid_to_GLOBE30(field_CF, region="GrIS"):
     cmd = "cdo --no_remap_weights remapbil,gridfile-Reg0.0083 " + \
           "-setgrid,gridfile-Reg0.083 cf_0.083deglatlonfield.nc " + \
           "cdo_0.0083deglatlonfield.nc"
+    t0 = time.time()
     status = os.system(cmd)
+    print("cdo refine: %.1fs" % (time.time() - t0))
     if status != 0:
         print("ERROR: failed to run cdo command")
         sys.exit(1)
 
     # Read the cdo results back in so we can return the array from this function
+    t0 = time.time()
     field_REGRID_array = cf.read("cdo_0.0083deglatlonfield.nc")[0].array
+    print("read back cdo output: %.1fs" % (time.time() - t0))
     cmd = "rm cdo_0.0083deglatlonfield.nc gridfile-Reg0.0083 " + \
           "gridfile-Reg0.083 cf_0.083deglatlonfield.nc"
     status = os.system(cmd)
@@ -282,33 +289,121 @@ def regrid_to_GLOBE30(field_CF, region="GrIS"):
     # End two_stage extension
     #######################################
 
-    return field_REGRID_array
+    # centre of the first (south-west) cell of the fine regional grid, needed
+    # later to work out where this regional data sits within a global ancil
+    lon0 = xmin + dx_regrid_fine / 2.
+    lat0 = ymin + dy_regrid_fine / 2.
+
+    return field_REGRID_array, lon0, lat0
 
 
-def splice_into_ancil_template(topog_data, ancil_template, ancil_output):
+def feather_weights(topog_data, feather_deg):
+    """Weight 0 at the edge of valid BISICLES data rising linearly to 1
+    feather_deg degrees inside it (array edges count as edges)."""
+    from scipy.ndimage import distance_transform_edt
+
+    valid = ~np.ma.getmaskarray(topog_data)
+    if feather_deg <= 0:
+        return valid.astype(np.float32)
+    padded = np.pad(valid, 1, constant_values=False)
+    dist = distance_transform_edt(padded)[1:-1, 1:-1]
+    nfeather = feather_deg / dy_regrid_fine
+    return np.clip(dist / nfeather, 0., 1.).astype(np.float32)
+
+
+def splice_into_ancil_template(topog_data, lon0, lat0, ancil_template,
+                               ancil_output, feather_deg=4):
     import mule
     import common_mule_rss as mule_rss
 
     """
     Update the topography file CAP will use as input only where we have
-    data from BISICLES
+    data from BISICLES.
+
+    ancil_template may either be cropped to exactly the regional domain
+    (in which case topog_data lines up 1:1 with it), or it may be a full
+    global field, in which case we work out where the regional data
+    belongs using the grid definitions in the ancil's own header and the
+    known origin (lon0, lat0) of the regional grid, rather than assuming
+    the two arrays share an origin.
     """
 
+    t0 = time.time()
     fieldg = mule.load_umfile(ancil_template)
-    globe30 = fieldg.fields[0].get_data().copy()
+    field0 = fieldg.fields[0]
+    globe30 = field0.get_data()
+    print("load ancil template + get_data: %.1fs" % (time.time() - t0))
 
     # Latitude axes in the usual CAP input field ordered in the opposite 
     # direction, so flip our data array N-S
     topog_data = topog_data[::-1, :]
+    ny, nx = topog_data.shape
 
-    # Update the CAP input where we have data
-    update = np.where(topog_data.mask == False)
-    globe30[update] = topog_data[update]
+    # lat/lon of the centre of each row/column of the regional data, in the
+    # same (north to south) order as topog_data after the flip above
+    lat_reg = lat0 + dy_regrid_fine * np.arange(ny)
+    lat_reg = lat_reg[::-1]
+    lon_reg = lon0 + dx_regrid_fine * np.arange(nx)
+
+    nrow, ncol = globe30.shape
+
+    # blend weights so the BISICLES edge fades into the existing GLOBE30 data
+    weights = feather_weights(topog_data, feather_deg)
+
+    t0 = time.time()
+    if (nrow, ncol) == (ny, nx):
+        # template is already cropped to the regional domain, splice directly
+        update = np.where(topog_data.mask == False)
+        w = weights[update]
+        globe30[update] = w * topog_data[update] + (1. - w) * globe30[update]
+    else:
+        # template is a full global field - use the file-level real_constants
+        # for the grid definition. Some ancils (e.g. qrparm.orog) carry a
+        # bogus, rescaled column spacing in the per-field lookup headers
+        # (bzx/bdx), so those can't be trusted for this calculation.
+        # Latitude never wraps, so the regional rows map onto one contiguous
+        # block of global rows. Longitude can wrap around the date line (and,
+        # since the regional grid deliberately overlaps a bit for safety, may
+        # even wrap more than once), so that's handled a contiguous segment
+        # at a time. Plain slicing is used throughout (rather than fancy
+        # indexing) as it is vastly faster for arrays this size.
+        rc = fieldg.real_constants
+
+        row0 = int(round((rc.start_lat - lat_reg[0]) / rc.row_spacing))
+        row1 = row0 + ny
+        r_lo, r_hi = max(row0, 0), min(row1, nrow)
+        t_row_lo, t_row_hi = r_lo - row0, ny - (row1 - r_hi)
+
+        if r_lo < r_hi:
+            col_start = int(round(np.mod(lon_reg[0] - rc.start_lon, 360.)
+                                  / rc.col_spacing)) % ncol
+            src_col = 0
+            remaining = nx
+            while remaining > 0:
+                take = min(remaining, ncol - col_start)
+
+                sub_globe = globe30[r_lo:r_hi, col_start:col_start + take]
+                sub_topog = topog_data[t_row_lo:t_row_hi,
+                                       src_col:src_col + take]
+                update = np.where(sub_topog.mask == False)
+                w = weights[t_row_lo:t_row_hi,
+                            src_col:src_col + take][update]
+                sub_globe[update] = w * sub_topog[update] \
+                    + (1. - w) * sub_globe[update]
+                globe30[r_lo:r_hi, col_start:col_start + take] = sub_globe
+
+                src_col += take
+                remaining -= take
+                col_start = 0
+
+    print("splice loop: %.1fs" % (time.time() - t0))
 
     # poke the updated array back into the CAP ancil
+    t0 = time.time()
     fieldg.fields[0] = mule_rss.overwrite_data(fieldg.fields[0], globe30)
     fieldg = disable_mule_validators(fieldg)
     fieldg.to_file(ancil_output)
+    print("write output ancil: %.1fs" % (time.time() - t0))
 
     return
 
@@ -326,6 +421,7 @@ if __name__ == "__main__":
     # Make topography ancil for CAP
     print("regrid, splice CAP fields")
     surface_height_CF = construct_CF(surface_height, lon, lat, x_dist, y_dist)
-    surface_height_REGRID = regrid_to_GLOBE30(surface_height_CF, region=region)
-    splice_into_ancil_template(surface_height_REGRID, ancilin_file,
-                               ancilout_file)
+    surface_height_REGRID, lon0, lat0 = regrid_to_GLOBE30(surface_height_CF,
+                                                          region=region)
+    splice_into_ancil_template(surface_height_REGRID, lon0, lat0,
+                               ancilin_file, ancilout_file)

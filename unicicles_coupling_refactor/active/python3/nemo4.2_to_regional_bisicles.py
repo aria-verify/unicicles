@@ -75,18 +75,11 @@ if __name__ == "__main__":
         'long_name=Ice shelf ocean  heat flux ( from isf to oce )')\
                  .array.squeeze()
 
-
-    # NEMO output used to come with zero where there is no ocean (eg grounded ice)
-    # now it comes with a proper mask. Either way, we don't want a mask here - 
-    # cf regridding ends up putting missing_data flags into the real cavity even 
-    # where there is mostly good information.
+    # NEMO output just has zero where there is no ocean (eg grounded ice)
+    # We don't try to mask this out cf regridding ends up putting missing_data
+    # flags into the real cavity even where there is mostly good information.
     # For now, we just let cf treat the no ocean 0s as if they were valid info
     # to regrid
-
-    #replace mask with 0s if it exists
-    if isinstance(melt_water, np.ma.core.MaskedArray):
-      melt_water = np.ma.filled(melt_water,fill_value=0.)
-      melt_heat  = np.ma.filled(melt_heat, fill_value=0.)
 
     # Check for array size - we used to optionally do time averaging, but
     # that's now in process_ocean
